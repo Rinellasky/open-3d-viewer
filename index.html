@@ -96,6 +96,27 @@
   #empty-hint.hidden { display: none; }
   #empty-hint .sub { font-size: 13px; margin-top: 8px; opacity: 0.7; }
 
+  #busy {
+    position: fixed; top: 12px; left: 12px;
+    background: rgba(42,42,42,0.95);
+    border: 1px solid var(--accent); border-radius: 6px;
+    padding: 10px 16px;
+    z-index: 100;
+    display: none;
+    align-items: center; gap: 10px;
+    font-size: 13px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  }
+  #busy.active { display: flex; }
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
   .file-input { display: none; }
   .stats { color: var(--muted); font-size: 11px; }
 </style>
@@ -105,17 +126,19 @@
 
 <div id="empty-hint">
   Drop a 3D file here, or click <strong style="color:var(--accent)">Open File</strong>
-  <br><span class="sub">Supports: GLB, GLTF, FBX, OBJ, STL, PLY, USDZ &middot; HDR/EXR for environment</span>
+  <br><span class="sub">Models: GLB, GLTF, FBX, OBJ, STL, PLY, USDZ, USD/USDA/USDC, STEP, IGES, BREP &middot; Env: HDR, EXR</span>
 </div>
 
 <div id="drop-overlay">Drop to load</div>
+
+<div id="busy"><div class="spinner"></div><span id="busy-msg">Loading...</span></div>
 
 <div id="panel">
   <h2>3D Viewer</h2>
 
   <button class="primary" id="btn-open">Open File...</button>
   <input type="file" class="file-input" id="file-input"
-         accept=".glb,.gltf,.fbx,.obj,.stl,.ply,.usdz,.hdr,.exr" multiple>
+         accept=".glb,.gltf,.fbx,.obj,.stl,.ply,.usdz,.usd,.usda,.usdc,.step,.stp,.iges,.igs,.brep,.hdr,.exr" multiple>
 
   <h3>Environment</h3>
   <div class="row">
@@ -206,6 +229,7 @@ import { USDZLoader } from 'three/addons/loaders/USDZLoader.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { zipSync, strToU8 } from 'three/addons/libs/fflate.module.js';
 
 // ---------- Scene setup ----------
 const canvasWrap = document.getElementById('canvas-wrap');
@@ -261,6 +285,119 @@ const plyLoader = new PLYLoader();
 const usdzLoader = new USDZLoader();
 const rgbeLoader = new RGBELoader();
 const exrLoader = new EXRLoader();
+
+// ---------- Busy indicator ----------
+const busyEl = document.getElementById('busy');
+const busyMsgEl = document.getElementById('busy-msg');
+function busy(msg) { busyMsgEl.textContent = msg; busyEl.classList.add('active'); }
+function unbusy() { busyEl.classList.remove('active'); }
+
+// ---------- OCCT (lazy-loaded for STEP/IGES/BREP) ----------
+let occtPromise = null;
+function getOcct() {
+  if (occtPromise) return occtPromise;
+  occtPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/occt-import-js@0.0.22/dist/occt-import-js.js';
+    script.onload = () => {
+      if (typeof occtimportjs !== 'function') {
+        reject(new Error('occt-import-js global not found after script load'));
+        return;
+      }
+      // Tell emscripten where to find the .wasm
+      occtimportjs({
+        locateFile: (path) => `https://cdn.jsdelivr.net/npm/occt-import-js@0.0.22/dist/${path}`
+      }).then(resolve, reject);
+    };
+    script.onerror = () => reject(new Error('Failed to load occt-import-js from CDN'));
+    document.head.appendChild(script);
+  });
+  return occtPromise;
+}
+
+async function loadCadFile(file, ext) {
+  busy(`Parsing ${ext.toUpperCase()} via OpenCascade...`);
+  try {
+    const occt = await getOcct();
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let result;
+    const params = null;
+    if (ext === 'step' || ext === 'stp') result = occt.ReadStepFile(buf, params);
+    else if (ext === 'iges' || ext === 'igs') result = occt.ReadIgesFile(buf, params);
+    else if (ext === 'brep') result = occt.ReadBrepFile(buf, params);
+    else throw new Error(`Unhandled CAD extension: ${ext}`);
+
+    if (!result || !result.success) {
+      throw new Error(`OpenCascade could not parse this ${ext.toUpperCase()} file`);
+    }
+
+    const group = new THREE.Group();
+    for (const meshData of result.meshes) {
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array(meshData.attributes.position.array);
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      if (meshData.attributes.normal) {
+        const norm = new Float32Array(meshData.attributes.normal.array);
+        geo.setAttribute('normal', new THREE.BufferAttribute(norm, 3));
+      } else {
+        geo.computeVertexNormals();
+      }
+      if (meshData.index) {
+        const Ctor = meshData.index.array.length > 0 && (Math.max(...meshData.index.array.slice(0, Math.min(1000, meshData.index.array.length))) > 65535) ? Uint32Array : Uint32Array;
+        const idx = new Ctor(meshData.index.array);
+        geo.setIndex(new THREE.BufferAttribute(idx, 1));
+      }
+      let color = new THREE.Color(0xb8b8c0);
+      if (meshData.color && meshData.color.length >= 3) {
+        color = new THREE.Color(meshData.color[0], meshData.color[1], meshData.color[2]);
+      }
+      const mat = new THREE.MeshStandardMaterial({
+        color, roughness: 0.45, metalness: 0.15,
+        side: THREE.DoubleSide
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      if (meshData.name) mesh.name = meshData.name;
+      group.add(mesh);
+    }
+    setObject(group, file.name);
+  } catch (err) {
+    console.error(err);
+    alert(`Failed to load CAD file ${file.name}\n\n${err.message || err}`);
+  } finally {
+    unbusy();
+  }
+}
+
+// ---------- USD wrapper (Phase 3) ----------
+// Wraps a raw .usd / .usda / .usdc into a USDZ container in memory so we can
+// reuse Three.js's USDZLoader. Works for self-contained USD files; files with
+// external asset references will fail (those need full USD-wasm support).
+async function loadRawUsd(file, ext) {
+  busy(`Wrapping ${ext.toUpperCase()} as USDZ...`);
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    // Strip directory from filename
+    const baseName = file.name.replace(/.*[\\\/]/, '');
+    // USDZ requires the root file to be aligned. fflate's zipSync with level 0
+    // (stored, no compression) creates a USDZ-compatible archive.
+    const zipData = zipSync({ [baseName]: [buf, { level: 0 }] });
+    // Pass through USDZLoader.parse (it expects a zip ArrayBuffer)
+    const obj = usdzLoader.parse(zipData.buffer);
+    setObject(obj, file.name);
+  } catch (err) {
+    console.error(err);
+    alert(
+      `Couldn't load ${file.name} as USD.\n\n` +
+      `${err.message || err}\n\n` +
+      `Simple, self-contained USD files work. Files referencing external textures or layers ` +
+      `need full Pixar USD support (planned). Workarounds:\n` +
+      `  - Re-export as .usdz (single-file)\n` +
+      `  - Re-export as .glb`
+    );
+  } finally {
+    unbusy();
+  }
+}
 
 // ---------- Loading ----------
 function clearObject() {
@@ -342,6 +479,21 @@ function loadFile(file) {
       break;
     case 'usdz':
       usdzLoader.load(url, (obj) => setObject(obj, file.name), undefined, onError);
+      break;
+    case 'usd':
+    case 'usda':
+    case 'usdc':
+      // Phase 3: wrap raw USD into a USDZ container so the existing loader can handle it.
+      // This works for simple/self-contained USD files. Files with external asset references
+      // need full Pixar USD support (planned: usd-wasm integration).
+      loadRawUsd(file, ext);
+      break;
+    case 'step':
+    case 'stp':
+    case 'iges':
+    case 'igs':
+    case 'brep':
+      loadCadFile(file, ext);
       break;
     case 'hdr':
       rgbeLoader.load(url, (tex) => setEnvironmentFromTexture(tex, file.name), undefined, onError);
