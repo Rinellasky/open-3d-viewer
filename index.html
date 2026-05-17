@@ -119,6 +119,84 @@
 
   .file-input { display: none; }
   .stats { color: var(--muted); font-size: 11px; }
+
+  /* Generate modal */
+  #gen-modal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 200;
+    backdrop-filter: blur(4px);
+  }
+  #gen-modal.active { display: flex; }
+  #gen-modal .dialog {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: min(820px, 95vw);
+    max-height: 92vh;
+    display: flex; flex-direction: column;
+    box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+  }
+  #gen-modal header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  #gen-modal header h2 { margin: 0; font-size: 16px; }
+  #gen-modal .close-btn {
+    background: none; border: none; color: var(--muted);
+    font-size: 22px; cursor: pointer; padding: 0; width: auto;
+    line-height: 1;
+  }
+  #gen-modal .close-btn:hover { color: var(--text); }
+  #gen-modal .body {
+    padding: 14px 18px;
+    overflow-y: auto;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  #gen-modal .body label.field {
+    font-size: 11px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-top: 4px;
+  }
+  #scad-prompt {
+    width: 100%; padding: 8px 10px;
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    font: inherit; resize: vertical; min-height: 56px;
+  }
+  #scad-editor {
+    width: 100%; min-height: 280px; max-height: 50vh;
+    padding: 10px;
+    background: #181818; color: #e0e0e0;
+    border: 1px solid var(--border); border-radius: 4px;
+    font: 13px/1.45 "Cascadia Mono", Consolas, "Courier New", monospace;
+    resize: vertical;
+    tab-size: 4;
+  }
+  #scad-status {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    background: #1c1c1c;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    min-height: 16px;
+    white-space: pre-wrap;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+  #scad-status.err { color: #ff8b8b; border-color: #5a2a2a; }
+  #scad-status.ok { color: #8be58b; border-color: #2a5a2a; }
+  #gen-modal .actions {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+  }
+  #gen-modal .actions button { width: auto; flex: 1; min-width: 130px; margin: 0; }
 </style>
 </head>
 <body>
@@ -133,10 +211,50 @@
 
 <div id="busy"><div class="spinner"></div><span id="busy-msg">Loading...</span></div>
 
+<!-- Generate (text-to-3D / parametric) modal -->
+<div id="gen-modal">
+  <div class="dialog">
+    <header>
+      <h2>&#10024; Generate 3D (OpenSCAD)</h2>
+      <button class="close-btn" id="gen-close" title="Close">&times;</button>
+    </header>
+    <div class="body">
+      <label class="field" for="scad-template">Template</label>
+      <select id="scad-template">
+        <option value="cube">Cube</option>
+        <option value="sphere">Sphere</option>
+        <option value="cylinder">Cylinder</option>
+        <option value="hollow_box">Hollow Box</option>
+        <option value="rounded_box">Rounded Box</option>
+        <option value="vase">Vase</option>
+        <option value="gear">Spur Gear</option>
+        <option value="bracket">L-Bracket (with holes)</option>
+        <option value="knob">Knurled Knob</option>
+        <option value="phone_stand">Phone Stand</option>
+        <option value="blank">Blank</option>
+      </select>
+
+      <label class="field" for="scad-prompt">Natural-language description (optional)</label>
+      <textarea id="scad-prompt" placeholder="e.g. a 40mm diameter knob with 12 knurls and a 6mm shaft hole"></textarea>
+
+      <label class="field" for="scad-editor">OpenSCAD code</label>
+      <textarea id="scad-editor" spellcheck="false"></textarea>
+
+      <div id="scad-status">Ready.</div>
+    </div>
+    <div class="actions">
+      <button class="primary" id="scad-render">Render &amp; Load</button>
+      <button id="scad-copy-prompt">Copy Claude Prompt</button>
+      <button id="scad-save">Save .scad</button>
+    </div>
+  </div>
+</div>
+
 <div id="panel">
   <h2>3D Viewer</h2>
 
   <button class="primary" id="btn-open">Open File...</button>
+  <button id="btn-generate">&#10024; Generate (OpenSCAD)</button>
   <input type="file" class="file-input" id="file-input"
          accept=".glb,.gltf,.fbx,.obj,.stl,.ply,.usdz,.usd,.usda,.usdc,.step,.stp,.iges,.igs,.brep,.hdr,.exr" multiple>
 
@@ -724,6 +842,301 @@ function animate() {
   controls.update();
   renderer.render(scene, camera);
 }
+
+// =====================================================================
+// Phase 4: Text-to-3D via OpenSCAD-WASM
+// =====================================================================
+
+const SCAD_TEMPLATES = {
+  blank: `// Blank canvas. Write OpenSCAD here.
+$fn = 64;
+`,
+  cube: `// Cube
+$fn = 64;
+cube([20, 30, 10], center = true);
+`,
+  sphere: `// Sphere
+$fn = 96;
+sphere(r = 15);
+`,
+  cylinder: `// Cylinder
+$fn = 96;
+cylinder(h = 30, r = 10, center = true);
+`,
+  hollow_box: `// Hollow box (open top)
+$fn = 32;
+wall = 2;
+size = [40, 40, 30];
+
+difference() {
+    cube(size, center = true);
+    translate([0, 0, wall])
+        cube([size[0] - 2*wall, size[1] - 2*wall, size[2]], center = true);
+}
+`,
+  rounded_box: `// Rounded box via minkowski
+$fn = 32;
+size = [40, 25, 12];
+r = 3;
+
+minkowski() {
+    cube([size[0]-2*r, size[1]-2*r, size[2]-2*r], center = true);
+    sphere(r = r);
+}
+`,
+  vase: `// Vase: revolved profile
+$fn = 96;
+h = 80;
+steps = 60;
+
+rotate_extrude()
+    polygon(points = [
+        for (i = [0:steps])
+            let (t = i/steps, y = t*h)
+            [ 10 + 8*sin(t*360*1.5) + 6*(1-cos(t*180)), y ]
+    ]);
+`,
+  gear: `// Spur gear (simple involute approximation)
+$fn = 64;
+teeth = 20;
+modulus = 2;
+thickness = 6;
+hole = 5;
+
+pitch_r = teeth * modulus / 2;
+addendum = modulus;
+dedendum = 1.25 * modulus;
+
+module tooth() {
+    polygon(points = [
+        [pitch_r - dedendum, -modulus*1.3],
+        [pitch_r - dedendum,  modulus*1.3],
+        [pitch_r + addendum,  modulus*0.5],
+        [pitch_r + addendum, -modulus*0.5]
+    ]);
+}
+
+linear_extrude(height = thickness, center = true)
+    difference() {
+        union() {
+            circle(r = pitch_r - dedendum + 0.5);
+            for (i = [0:teeth-1]) rotate([0, 0, i * 360/teeth]) tooth();
+        }
+        circle(r = hole/2);
+    }
+`,
+  bracket: `// Simple L-bracket with mounting holes
+$fn = 48;
+arm = 40;       // length of each arm
+width = 20;     // bracket width
+thick = 3;      // wall thickness
+hole_d = 4;     // mounting hole diameter
+
+difference() {
+    union() {
+        // horizontal arm
+        cube([arm, width, thick]);
+        // vertical arm
+        cube([thick, width, arm]);
+    }
+    // holes through horizontal arm
+    translate([arm*0.3, width/2, -1]) cylinder(h = thick+2, d = hole_d);
+    translate([arm*0.75, width/2, -1]) cylinder(h = thick+2, d = hole_d);
+    // holes through vertical arm
+    translate([-1, width/2, arm*0.3]) rotate([0,90,0]) cylinder(h = thick+2, d = hole_d);
+    translate([-1, width/2, arm*0.75]) rotate([0,90,0]) cylinder(h = thick+2, d = hole_d);
+}
+`,
+  knob: `// Knurled knob with shaft hole
+$fn = 96;
+d_outer = 40;
+height = 18;
+shaft_d = 6;
+knurls = 24;
+
+difference() {
+    union() {
+        cylinder(d = d_outer, h = height);
+        // knurls
+        for (i = [0:knurls-1])
+            rotate([0, 0, i*360/knurls])
+                translate([d_outer/2 - 1, 0, 0])
+                    cylinder(d = 1.8, h = height);
+    }
+    // shaft hole
+    translate([0, 0, -1]) cylinder(d = shaft_d, h = height + 2);
+    // top recess
+    translate([0, 0, height-1.5]) cylinder(d = d_outer*0.55, h = 2);
+}
+`,
+  phone_stand: `// Simple angled phone stand
+$fn = 32;
+w = 80;     // width
+d = 60;     // depth at base
+h = 70;     // height
+slot_w = 12;// slot width
+angle = 70; // back support angle
+
+difference() {
+    // Triangular wedge
+    linear_extrude(height = w)
+        polygon([[0,0], [d, 0], [0, h]]);
+    // Phone slot (cuts through the front face)
+    translate([d*0.55, -1, w/2]) rotate([-90, 0, 90])
+        linear_extrude(height = h)
+            square([slot_w, d*0.6], center = true);
+    // Cable hole
+    translate([d*0.4, h*0.1, w/2]) rotate([0, 90, 0])
+        cylinder(d = 12, h = d, center = true);
+}
+`
+};
+
+const CLAUDE_PROMPT_TEMPLATE = `Write OpenSCAD code for: \${DESCRIPTION}
+
+Requirements:
+- Output ONLY OpenSCAD code. No markdown fences, no explanation, no preamble.
+- Set \\\`$fn = 64\\\` (or higher) for smooth curves.
+- Center the model at origin where reasonable.
+- Use millimeters as units.
+- Keep total code under 120 lines.
+- Use only stable OpenSCAD primitives (cube, cylinder, sphere, polygon, linear_extrude, rotate_extrude, hull, minkowski, difference, union, intersection, translate, rotate, scale, mirror, for, if, module, function).
+- Do not use the text() primitive (fonts not available in our WASM build).
+- Do not depend on external libraries (no use<>, no include<>).
+- Add brief comments for any non-obvious parameter or math.
+
+Target renderer: OpenSCAD-WASM 2022.03.20 (browser).
+`;
+
+const scadEditor   = document.getElementById('scad-editor');
+const scadPrompt   = document.getElementById('scad-prompt');
+const scadStatus   = document.getElementById('scad-status');
+const scadTemplate = document.getElementById('scad-template');
+const genModal     = document.getElementById('gen-modal');
+
+function setScadStatus(msg, kind) {
+  scadStatus.textContent = msg;
+  scadStatus.className = '';
+  if (kind) scadStatus.classList.add(kind);
+}
+
+scadTemplate.addEventListener('change', (e) => {
+  scadEditor.value = SCAD_TEMPLATES[e.target.value] ?? SCAD_TEMPLATES.blank;
+  setScadStatus(`Loaded template: ${e.target.value}`, 'ok');
+});
+// Default to cube on first open
+scadEditor.value = SCAD_TEMPLATES.cube;
+
+document.getElementById('btn-generate').addEventListener('click', () => {
+  genModal.classList.add('active');
+});
+document.getElementById('gen-close').addEventListener('click', () => {
+  genModal.classList.remove('active');
+});
+genModal.addEventListener('click', (e) => {
+  if (e.target === genModal) genModal.classList.remove('active');
+});
+
+// ---- OpenSCAD-WASM lazy loader ----
+let openscadInstance = null;
+const openscadLog = [];
+
+async function getOpenSCAD() {
+  if (openscadInstance) return openscadInstance;
+  setScadStatus('Loading OpenSCAD-WASM (one-time, ~7.5 MB)...', '');
+  let OpenSCAD;
+  try {
+    OpenSCAD = (await import('./vendor/openscad-wasm/openscad.js')).default;
+  } catch (e) {
+    throw new Error(
+      'Could not load vendor/openscad-wasm/openscad.js.\n' +
+      'Did you run setup.ps1 in the project folder? It downloads the WASM.\n\n' +
+      `Underlying error: ${e.message || e}`
+    );
+  }
+  openscadInstance = await OpenSCAD({
+    noInitialRun: true,
+    print:    (s) => openscadLog.push(s),
+    printErr: (s) => openscadLog.push(s)
+  });
+  return openscadInstance;
+}
+
+async function renderScad(code) {
+  const inst = await getOpenSCAD();
+  openscadLog.length = 0;
+  // Write input to virtual FS
+  try { inst.FS.unlink('/input.scad'); } catch(_) {}
+  try { inst.FS.unlink('/out.stl'); } catch(_) {}
+  inst.FS.writeFile('/input.scad', code);
+
+  let exitCode = 0;
+  try {
+    inst.callMain(['/input.scad', '-o', '/out.stl']);
+  } catch (e) {
+    // Emscripten throws ExitStatus when main returns non-zero
+    exitCode = e.status ?? -1;
+  }
+
+  let data;
+  try { data = inst.FS.readFile('/out.stl'); }
+  catch (_) { data = null; }
+
+  if (!data || data.length < 84) {
+    const stderr = openscadLog.join('\n').trim() || '(no diagnostic output)';
+    throw new Error(`OpenSCAD failed${exitCode ? ' (exit '+exitCode+')' : ''}:\n${stderr}`);
+  }
+  return { stl: data, log: openscadLog.join('\n') };
+}
+
+document.getElementById('scad-render').addEventListener('click', async () => {
+  const code = scadEditor.value.trim();
+  if (!code) { setScadStatus('Editor is empty.', 'err'); return; }
+  setScadStatus('Rendering...', '');
+  busy('Running OpenSCAD-WASM...');
+  try {
+    const t0 = performance.now();
+    const { stl, log } = await renderScad(code);
+    const ms = (performance.now() - t0).toFixed(0);
+
+    // Load STL into Three
+    const geo = stlLoader.parse(stl.buffer.slice(stl.byteOffset, stl.byteOffset + stl.byteLength));
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.45, metalness: 0.1 });
+    const mesh = new THREE.Mesh(geo, mat);
+    const group = new THREE.Group();
+    group.add(mesh);
+    setObject(group, `generated_${scadTemplate.value}.stl`);
+
+    setScadStatus(`Rendered in ${ms} ms${log ? '\n' + log : ''}`, 'ok');
+    genModal.classList.remove('active');
+  } catch (err) {
+    console.error(err);
+    setScadStatus(String(err.message || err), 'err');
+  } finally {
+    unbusy();
+  }
+});
+
+document.getElementById('scad-copy-prompt').addEventListener('click', async () => {
+  const desc = scadPrompt.value.trim() || '[describe the object you want — be specific about dimensions in mm]';
+  const prompt = CLAUDE_PROMPT_TEMPLATE.replace('${DESCRIPTION}', desc);
+  try {
+    await navigator.clipboard.writeText(prompt);
+    setScadStatus('Claude prompt copied to clipboard. Paste it into a Claude chat, then paste the response back into the editor above.', 'ok');
+  } catch (e) {
+    setScadStatus('Clipboard blocked. Here is the prompt:\n\n' + prompt, '');
+  }
+});
+
+document.getElementById('scad-save').addEventListener('click', () => {
+  const code = scadEditor.value;
+  const blob = new Blob([code], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${scadTemplate.value || 'sketch'}_${Date.now()}.scad`;
+  a.click();
+});
 
 // Init: studio env
 setProceduralEnvironment('studio');

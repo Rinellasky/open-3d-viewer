@@ -4,16 +4,22 @@ A lightweight local-first 3D viewer to fill the gap left by Adobe Substance 3D V
 
 ## How to use
 
-1. Double-click `index.html` — opens in your default browser. Works offline once cached. (First load fetches Three.js from unpkg; after that it stays in browser cache. To make it fully offline, see *Vendoring* below.)
-2. Drag a 3D file onto the window, or click **Open File...**.
-3. Drag an `.hdr` or `.exr` onto the window to use it as the environment, or click **Load HDR/EXR...**.
+1. **First-time setup**: open PowerShell in this folder and run `.\setup.ps1`. This downloads the OpenSCAD-WASM vendor files (~8 MB, one time). Skip if you don't plan to use text-to-3D.
+2. Double-click `index.html` — opens in your default browser. Works offline once cached. (First load fetches Three.js from unpkg; after that it stays in browser cache. To make it fully offline, see *Vendoring* below.)
+3. Drag a 3D file onto the window, or click **Open File...**.
+4. Drag an `.hdr` or `.exr` onto the window to use it as the environment, or click **Load HDR/EXR...**.
+5. Click **Generate (OpenSCAD)** to open the parametric text-to-3D panel.
 
-## Supported formats (Phase 1)
+## Supported formats
 
-| Type | Extensions |
-|------|------------|
-| Models | `.glb` `.gltf` (with DRACO) `.fbx` `.obj` `.stl` `.ply` `.usdz` |
-| Environments | `.hdr` `.exr` |
+| Type | Extensions | Notes |
+|------|------------|-------|
+| Real-time meshes | `.glb` `.gltf` (with DRACO) `.fbx` `.obj` `.stl` `.ply` | Three.js native loaders |
+| USDZ | `.usdz` | Three.js native loader |
+| USD (raw) | `.usd` `.usda` `.usdc` | Phase 3: wrapped into USDZ in memory. Works for self-contained files. Files with external asset references need full Pixar USD support (planned). |
+| CAD (open standards) | `.step` `.stp` `.iges` `.igs` `.brep` | Phase 2: OpenCascade compiled to WASM via [`occt-import-js`](https://github.com/kovacsv/occt-import-js). |
+| Environments | `.hdr` `.exr` | RGBE / OpenEXR |
+| Generation | text + OpenSCAD code | Phase 4: rendered with [openscad-wasm](https://github.com/openscad/openscad-wasm) to STL → loaded into viewer |
 
 ## Features
 
@@ -36,11 +42,13 @@ A lightweight local-first 3D viewer to fill the gap left by Adobe Substance 3D V
   - **`three-usdz-loader`** — lighter but read-only.
   - **`usd-wasm`** — full Pixar USD compiled to WASM, heavy (~30 MB) but real.
 
-### Phase 4 — Text-to-3D
-Three viable approaches, in order of effort:
-1. **Parametric LLM-driven** — Claude writes OpenSCAD or CadQuery scripts from your prompt → render to STL/GLB → viewer loads. Best for mechanical/geometric drafts.
-2. **Hosted API** — Meshy / CSM / Hyper3D / Tripo. Paste their API key, paste prompt, get GLB back.
-3. **Local ONNX models** — what Substance Viewer did. Heavy (1–5 GB weights, GPU recommended) but fully offline.
+### Phase 4 — Text-to-3D (DONE: parametric)
+- ✅ Built-in template library (cube, sphere, cylinder, hollow box, rounded box, vase, gear, L-bracket, knurled knob, phone stand).
+- ✅ OpenSCAD code editor + browser-side render via openscad-wasm.
+- ✅ "Copy Claude Prompt" button generates a structured prompt template for use in a Claude chat — paste the output back into the editor and Render.
+- ✅ "Save .scad" to download your code.
+
+Future for this phase: hosted-API generation (Meshy / Tripo / Hyper3D) for organic shapes, optional local ONNX model support for fully-offline generative.
 
 ### Phase 5 — Desktop wrap
 Wrap in **Tauri** (small binary, Rust core) for:
