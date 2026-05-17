@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>3D Viewer</title>
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --panel: #2a2a2a;
+    --panel-2: #333;
+    --text: #e8e8e8;
+    --muted: #9a9a9a;
+    --accent: #4a9eff;
+    --border: #3a3a3a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  #canvas-wrap { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  #drop-overlay {
+    position: fixed; inset: 0; display: none;
+    align-items: center; justify-content: center;
+    background: rgba(74, 158, 255, 0.15);
+    border: 3px dashed var(--accent);
+    z-index: 50;
+    pointer-events: none;
+    font-size: 24px;
+  }
+  #drop-overlay.active { display: flex; }
+
+  #panel {
+    position: fixed; top: 12px; right: 12px;
+    width: 260px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    font-size: 13px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+  }
+  #panel h2 {
+    margin: 0 0 8px 0; font-size: 14px; font-weight: 600;
+    color: var(--text);
+  }
+  #panel h3 {
+    margin: 14px 0 6px 0; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+  .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  .row label { flex: 1; color: var(--muted); }
+  .row input[type="range"] { flex: 1; }
+  .row input[type="checkbox"] { accent-color: var(--accent); }
+  select, button {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; font: inherit; cursor: pointer;
+  }
+  select { width: 100%; }
+  button { width: 100%; margin-top: 4px; }
+  button:hover { background: #404040; }
+  button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  button.primary:hover { background: #3a8eef; }
+
+  #info {
+    position: fixed; bottom: 12px; left: 12px;
+    background: rgba(42,42,42,0.85);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    z-index: 10;
+    font-size: 12px;
+    color: var(--muted);
+    max-width: 360px;
+    backdrop-filter: blur(6px);
+  }
+  #info strong { color: var(--text); }
+  #empty-hint {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+    color: var(--muted);
+    font-size: 18px;
+    text-align: center;
+  }
+  #empty-hint.hidden { display: none; }
+  #empty-hint .sub { font-size: 13px; margin-top: 8px; opacity: 0.7; }
+
+  .file-input { display: none; }
+  .stats { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+
+<div id="empty-hint">
+  Drop a 3D file here, or click <strong style="color:var(--accent)">Open File</strong>
+  <br><span class="sub">Supports: GLB, GLTF, FBX, OBJ, STL, PLY, USDZ &middot; HDR/EXR for environment</span>
+</div>
+
+<div id="drop-overlay">Drop to load</div>
+
+<div id="panel">
+  <h2>3D Viewer</h2>
+
+  <button class="primary" id="btn-open">Open File...</button>
+  <input type="file" class="file-input" id="file-input"
+         accept=".glb,.gltf,.fbx,.obj,.stl,.ply,.usdz,.hdr,.exr" multiple>
+
+  <h3>Environment</h3>
+  <div class="row">
+    <label>Preset</label>
+  </div>
+  <select id="env-preset">
+    <option value="studio">Studio (procedural)</option>
+    <option value="warehouse">Warehouse (procedural)</option>
+    <option value="sunset">Sunset (procedural)</option>
+    <option value="neutral">Neutral grey</option>
+    <option value="black">Black</option>
+  </select>
+  <button id="btn-load-hdr">Load HDR/EXR...</button>
+
+  <div class="row">
+    <label>Show background</label>
+    <input type="checkbox" id="show-bg" checked>
+  </div>
+  <div class="row">
+    <label>Intensity</label>
+    <input type="range" id="env-intensity" min="0" max="3" step="0.05" value="1">
+  </div>
+  <div class="row">
+    <label>Rotation</label>
+    <input type="range" id="env-rotation" min="0" max="360" step="1" value="0">
+  </div>
+
+  <h3>Display</h3>
+  <div class="row">
+    <label>Wireframe</label>
+    <input type="checkbox" id="wireframe">
+  </div>
+  <div class="row">
+    <label>Grid</label>
+    <input type="checkbox" id="show-grid" checked>
+  </div>
+  <div class="row">
+    <label>Auto-rotate</label>
+    <input type="checkbox" id="auto-rotate">
+  </div>
+  <div class="row">
+    <label>Tone mapping</label>
+  </div>
+  <select id="tone-mapping">
+    <option value="ACESFilmic" selected>ACES Filmic</option>
+    <option value="Neutral">Neutral</option>
+    <option value="Reinhard">Reinhard</option>
+    <option value="Linear">Linear</option>
+    <option value="None">None</option>
+  </select>
+  <div class="row">
+    <label>Exposure</label>
+    <input type="range" id="exposure" min="0" max="3" step="0.05" value="1">
+  </div>
+
+  <h3>Camera</h3>
+  <button id="btn-frame">Frame Object</button>
+  <button id="btn-reset-cam">Reset View</button>
+
+  <h3>Export</h3>
+  <button id="btn-screenshot">Save Screenshot (PNG)</button>
+</div>
+
+<div id="info">
+  <div id="info-name"><strong>No model loaded</strong></div>
+  <div id="info-stats" class="stats"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { PLYLoader } from 'three/addons/loaders/PLYLoader.js';
+import { USDZLoader } from 'three/addons/loaders/USDZLoader.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { EXRLoader } from 'three/addons/loaders/EXRLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------- Scene setup ----------
+const canvasWrap = document.getElementById('canvas-wrap');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+canvasWrap.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 5000);
+camera.position.set(3, 2, 4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.target.set(0, 0, 0);
+
+const pmremGenerator = new THREE.PMREMGenerator(renderer);
+pmremGenerator.compileEquirectangularShader();
+
+// Grid + axes helpers
+const grid = new THREE.GridHelper(10, 20, 0x444444, 0x333333);
+grid.material.transparent = true;
+grid.material.opacity = 0.6;
+scene.add(grid);
+
+// Lights for fallback (when env is "neutral" or "black")
+const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+dir.position.set(5, 10, 7);
+scene.add(ambient);
+scene.add(dir);
+
+// Current loaded object
+let currentObject = null;
+let currentEnvTexture = null;
+let envSource = null; // raw equirect texture for rotation/background
+let backgroundEnabled = true;
+
+// ---------- Loaders ----------
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
+
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(dracoLoader);
+const fbxLoader = new FBXLoader();
+const objLoader = new OBJLoader();
+const stlLoader = new STLLoader();
+const plyLoader = new PLYLoader();
+const usdzLoader = new USDZLoader();
+const rgbeLoader = new RGBELoader();
+const exrLoader = new EXRLoader();
+
+// ---------- Loading ----------
+function clearObject() {
+  if (currentObject) {
+    scene.remove(currentObject);
+    currentObject.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        if (Array.isArray(o.material)) o.material.forEach(m => m.dispose());
+        else o.material.dispose();
+      }
+    });
+    currentObject = null;
+  }
+}
+
+function setObject(obj, fileName) {
+  clearObject();
+  currentObject = obj;
+  scene.add(obj);
+  applyWireframe(document.getElementById('wireframe').checked);
+  frameObject();
+  updateInfo(fileName, obj);
+  document.getElementById('empty-hint').classList.add('hidden');
+}
+
+function loadFile(file) {
+  const url = URL.createObjectURL(file);
+  const name = file.name.toLowerCase();
+  const ext = name.slice(name.lastIndexOf('.') + 1);
+
+  const onError = (err) => {
+    console.error(err);
+    alert(`Failed to load ${file.name}\n\n${err.message || err}`);
+  };
+
+  switch (ext) {
+    case 'glb':
+    case 'gltf':
+      gltfLoader.load(url, (gltf) => setObject(gltf.scene, file.name), undefined, onError);
+      break;
+    case 'fbx':
+      fbxLoader.load(url, (obj) => setObject(obj, file.name), undefined, onError);
+      break;
+    case 'obj':
+      objLoader.load(url, (obj) => {
+        // OBJ has no materials by default; give it a neutral one
+        obj.traverse(c => {
+          if (c.isMesh && (!c.material || c.material.length === 0)) {
+            c.material = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.5, metalness: 0 });
+          }
+        });
+        setObject(obj, file.name);
+      }, undefined, onError);
+      break;
+    case 'stl':
+      stlLoader.load(url, (geo) => {
+        const mat = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.4, metalness: 0.1 });
+        const mesh = new THREE.Mesh(geo, mat);
+        const group = new THREE.Group();
+        group.add(mesh);
+        setObject(group, file.name);
+      }, undefined, onError);
+      break;
+    case 'ply':
+      plyLoader.load(url, (geo) => {
+        geo.computeVertexNormals();
+        const hasColors = geo.hasAttribute('color');
+        const mat = new THREE.MeshStandardMaterial({
+          color: hasColors ? 0xffffff : 0xcccccc,
+          vertexColors: hasColors,
+          roughness: 0.5
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        const group = new THREE.Group();
+        group.add(mesh);
+        setObject(group, file.name);
+      }, undefined, onError);
+      break;
+    case 'usdz':
+      usdzLoader.load(url, (obj) => setObject(obj, file.name), undefined, onError);
+      break;
+    case 'hdr':
+      rgbeLoader.load(url, (tex) => setEnvironmentFromTexture(tex, file.name), undefined, onError);
+      break;
+    case 'exr':
+      exrLoader.load(url, (tex) => setEnvironmentFromTexture(tex, file.name), undefined, onError);
+      break;
+    default:
+      alert(`Unsupported file type: .${ext}`);
+  }
+}
+
+// ---------- Environment ----------
+function setEnvironmentFromTexture(tex, label) {
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  const envMap = pmremGenerator.fromEquirectangular(tex).texture;
+  scene.environment = envMap;
+  envSource = tex;
+  currentEnvTexture = envMap;
+  updateBackground();
+  if (label) console.log('Loaded HDR:', label);
+}
+
+function setProceduralEnvironment(kind) {
+  if (kind === 'black') {
+    scene.environment = null;
+    envSource = null;
+    currentEnvTexture = null;
+    scene.background = backgroundEnabled ? new THREE.Color(0x000000) : null;
+    return;
+  }
+  if (kind === 'neutral') {
+    scene.environment = null;
+    envSource = null;
+    currentEnvTexture = null;
+    scene.background = backgroundEnabled ? new THREE.Color(0x202020) : null;
+    return;
+  }
+  // Procedural via RoomEnvironment + tinting trick for variety
+  const room = new RoomEnvironment();
+  const envMap = pmremGenerator.fromScene(room, 0.04).texture;
+  scene.environment = envMap;
+  currentEnvTexture = envMap;
+  envSource = null;
+  // background color tints per preset
+  const bgs = {
+    studio:    0x303030,
+    warehouse: 0x252b33,
+    sunset:    0x40342a
+  };
+  scene.background = backgroundEnabled ? new THREE.Color(bgs[kind] ?? 0x303030) : null;
+}
+
+function updateBackground() {
+  if (!backgroundEnabled) {
+    scene.background = null;
+    return;
+  }
+  if (envSource) {
+    scene.background = envSource;
+  } else if (currentEnvTexture) {
+    // Already a PMREM, can't use as direct background; just leave a solid colour
+    scene.background = new THREE.Color(0x303030);
+  }
+}
+
+// ---------- Helpers ----------
+function frameObject() {
+  if (!currentObject) return;
+  const box = new THREE.Box3().setFromObject(currentObject);
+  if (box.isEmpty()) return;
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * Math.PI / 180;
+  let dist = maxDim / (2 * Math.tan(fov / 2));
+  dist *= 1.6;
+  const dirVec = new THREE.Vector3(1, 0.6, 1).normalize();
+  camera.position.copy(center).add(dirVec.multiplyScalar(dist));
+  camera.near = Math.max(maxDim / 1000, 0.001);
+  camera.far  = Math.max(maxDim * 100, 100);
+  camera.updateProjectionMatrix();
+  controls.target.copy(center);
+  controls.update();
+  // Resize grid to fit
+  const gridSize = Math.max(2, Math.ceil(maxDim * 2));
+  grid.scale.setScalar(gridSize / 10);
+}
+
+function applyWireframe(on) {
+  if (!currentObject) return;
+  currentObject.traverse(o => {
+    if (o.isMesh && o.material) {
+      if (Array.isArray(o.material)) o.material.forEach(m => m.wireframe = on);
+      else o.material.wireframe = on;
+    }
+  });
+}
+
+function updateInfo(name, obj) {
+  let tris = 0, verts = 0, meshes = 0;
+  obj.traverse(o => {
+    if (o.isMesh && o.geometry) {
+      meshes++;
+      const g = o.geometry;
+      verts += (g.attributes.position?.count) || 0;
+      if (g.index) tris += g.index.count / 3;
+      else tris += (g.attributes.position?.count || 0) / 3;
+    }
+  });
+  document.getElementById('info-name').innerHTML = `<strong>${name}</strong>`;
+  document.getElementById('info-stats').textContent =
+    `${meshes.toLocaleString()} mesh${meshes===1?'':'es'} · ${Math.round(tris).toLocaleString()} triangles · ${verts.toLocaleString()} vertices`;
+}
+
+// ---------- UI wiring ----------
+const fileInput = document.getElementById('file-input');
+document.getElementById('btn-open').addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => {
+  for (const f of e.target.files) loadFile(f);
+  fileInput.value = '';
+});
+
+const hdrInput = document.createElement('input');
+hdrInput.type = 'file';
+hdrInput.accept = '.hdr,.exr';
+hdrInput.style.display = 'none';
+document.body.appendChild(hdrInput);
+document.getElementById('btn-load-hdr').addEventListener('click', () => hdrInput.click());
+hdrInput.addEventListener('change', (e) => {
+  if (e.target.files[0]) loadFile(e.target.files[0]);
+  hdrInput.value = '';
+});
+
+document.getElementById('env-preset').addEventListener('change', (e) => {
+  setProceduralEnvironment(e.target.value);
+});
+
+document.getElementById('show-bg').addEventListener('change', (e) => {
+  backgroundEnabled = e.target.checked;
+  if (!backgroundEnabled) scene.background = null;
+  else updateBackground();
+});
+
+document.getElementById('env-intensity').addEventListener('input', (e) => {
+  scene.environmentIntensity = parseFloat(e.target.value);
+});
+
+document.getElementById('env-rotation').addEventListener('input', (e) => {
+  const rad = parseFloat(e.target.value) * Math.PI / 180;
+  scene.environmentRotation = new THREE.Euler(0, rad, 0);
+  scene.backgroundRotation = new THREE.Euler(0, rad, 0);
+});
+
+document.getElementById('wireframe').addEventListener('change', (e) => applyWireframe(e.target.checked));
+document.getElementById('show-grid').addEventListener('change', (e) => grid.visible = e.target.checked);
+document.getElementById('auto-rotate').addEventListener('change', (e) => controls.autoRotate = e.target.checked);
+controls.autoRotateSpeed = 1.5;
+
+const toneMap = {
+  'ACESFilmic': THREE.ACESFilmicToneMapping,
+  'Neutral':    THREE.NeutralToneMapping,
+  'Reinhard':   THREE.ReinhardToneMapping,
+  'Linear':     THREE.LinearToneMapping,
+  'None':       THREE.NoToneMapping
+};
+document.getElementById('tone-mapping').addEventListener('change', (e) => {
+  renderer.toneMapping = toneMap[e.target.value] ?? THREE.ACESFilmicToneMapping;
+  if (currentObject) currentObject.traverse(o => {
+    if (o.isMesh && o.material) {
+      if (Array.isArray(o.material)) o.material.forEach(m => m.needsUpdate = true);
+      else o.material.needsUpdate = true;
+    }
+  });
+});
+
+document.getElementById('exposure').addEventListener('input', (e) => {
+  renderer.toneMappingExposure = parseFloat(e.target.value);
+});
+
+document.getElementById('btn-frame').addEventListener('click', frameObject);
+document.getElementById('btn-reset-cam').addEventListener('click', () => {
+  camera.position.set(3, 2, 4);
+  controls.target.set(0, 0, 0);
+  controls.update();
+});
+
+document.getElementById('btn-screenshot').addEventListener('click', () => {
+  renderer.render(scene, camera); // ensure fresh frame
+  const data = renderer.domElement.toDataURL('image/png');
+  const a = document.createElement('a');
+  a.href = data;
+  const name = currentObject ? (document.getElementById('info-name').textContent || 'render') : 'render';
+  a.download = `${name.replace(/\.[^.]+$/, '')}-${Date.now()}.png`;
+  a.click();
+});
+
+// ---------- Drag-and-drop ----------
+const overlay = document.getElementById('drop-overlay');
+let dragCount = 0;
+window.addEventListener('dragenter', (e) => {
+  e.preventDefault();
+  dragCount++;
+  overlay.classList.add('active');
+});
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('dragleave', () => {
+  dragCount--;
+  if (dragCount <= 0) { dragCount = 0; overlay.classList.remove('active'); }
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dragCount = 0;
+  overlay.classList.remove('active');
+  if (!e.dataTransfer.files.length) return;
+  for (const f of e.dataTransfer.files) loadFile(f);
+});
+
+// ---------- Resize & animate ----------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// Init: studio env
+setProceduralEnvironment('studio');
+animate();
+</script>
+</body>
+</html>

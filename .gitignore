@@ -1,0 +1,39 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node (for any future build tooling)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npmrc
+
+# Build outputs
+/dist/
+/build/
+
+# Tauri (Phase 5)
+/src-tauri/target/
+/src-tauri/Cargo.lock
+/src-tauri/gen/
+
+# Logs
+*.log
+
+# Local environment / secrets
+.env
+.env.local
+*.local
+
+# Vendor blobs (re-downloadable, not source-of-truth)
+/vendor/
