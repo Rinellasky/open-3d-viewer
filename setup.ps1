@@ -7,10 +7,10 @@ $root = $PSScriptRoot
 if (-not $root) { $root = (Get-Location).Path }
 
 Write-Host "open-3d-viewer setup" -ForegroundColor Cyan
-Write-Host "Vendor target: $root\vendor" -ForegroundColor Gray
+Write-Host "Vendor target: $root\web\vendor" -ForegroundColor Gray
 
 # ---- OpenSCAD WASM (Phase 4: text-to-3D) ----
-$openscadDir = "$root\vendor\openscad-wasm"
+$openscadDir = "$root\web\vendor\openscad-wasm"
 $openscadBase = 'https://github.com/openscad/openscad-wasm/releases/download/2022.03.20'
 $openscadFiles = @(
   @{ name='openscad.js';      bytes=745 },

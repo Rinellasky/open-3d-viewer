@@ -35,5 +35,11 @@ pnpm-debug.log*
 .env.local
 *.local
 
-# Vendor blobs (re-downloadable, not source-of-truth)
+# Vendor blobs (re-downloadable via setup.ps1, not source-of-truth)
 /vendor/
+/web/vendor/
+
+# Transient build helpers
+/src-tauri/build.log
+/src-tauri/build.done
+/src-tauri/build.cmd

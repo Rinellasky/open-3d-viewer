@@ -1,0 +1,117 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Open 3D Viewer",
+  "version": "0.1.0",
+  "identifier": "com.rinellasky.open3dviewer",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Open 3D Viewer",
+        "width": 1400,
+        "height": 900,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["glb", "gltf"],
+        "name": "glTF 3D Model",
+        "description": "glTF / GLB 3D model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["fbx"],
+        "name": "FBX 3D Model",
+        "description": "Autodesk FBX 3D model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["obj"],
+        "name": "Wavefront OBJ",
+        "description": "Wavefront OBJ 3D model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["stl"],
+        "name": "STL 3D Model",
+        "description": "Stereolithography (STL) 3D model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["ply"],
+        "name": "PLY 3D Model",
+        "description": "Stanford PLY 3D model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["usdz", "usd", "usda", "usdc"],
+        "name": "USD Scene",
+        "description": "Pixar Universal Scene Description",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["step", "stp"],
+        "name": "STEP CAD File",
+        "description": "ISO 10303 STEP CAD model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["iges", "igs"],
+        "name": "IGES CAD File",
+        "description": "IGES CAD model",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["brep"],
+        "name": "BREP CAD File",
+        "description": "OpenCascade BREP",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["scad"],
+        "name": "OpenSCAD Script",
+        "description": "OpenSCAD source script",
+        "role": "Editor"
+      },
+      {
+        "ext": ["hdr", "exr"],
+        "name": "HDR Environment",
+        "description": "HDR / OpenEXR environment map",
+        "role": "Viewer"
+      }
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}

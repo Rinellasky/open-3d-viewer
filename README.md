@@ -2,10 +2,25 @@
 
 A lightweight local-first 3D viewer to fill the gap left by Adobe Substance 3D Viewer.
 
+## Layout
+
+```
+open-3d-viewer/
+  web/              -- the frontend (browser-runnable)
+    index.html
+    assets/         -- sample model + sample HDRI
+    vendor/         -- openscad-wasm (gitignored, populated by setup.ps1)
+  src-tauri/        -- Rust/Tauri desktop wrapper (Phase 5)
+  setup.ps1         -- one-time vendor downloader
+  README.md, CREDITS.md
+```
+
 ## How to use
 
-1. **First-time setup**: open PowerShell in this folder and run `.\setup.ps1`. This downloads the OpenSCAD-WASM vendor files (~8 MB, one time). Skip if you don't plan to use text-to-3D.
-2. Double-click `index.html` — opens in your default browser. Works offline once cached. (First load fetches Three.js from unpkg; after that it stays in browser cache. To make it fully offline, see *Vendoring* below.)
+1. **First-time setup**: open PowerShell in this folder and run `.\setup.ps1`. This downloads the OpenSCAD-WASM vendor files (~8 MB, one time) into `web/vendor/`. Skip if you don't plan to use text-to-3D.
+2. **Two ways to run:**
+   - **Browser**: double-click `web/index.html`. Works offline once cached. Note: Phase 4 (OpenSCAD generate) needs a real HTTP origin to work in Chrome — see *Desktop app* below.
+   - **Desktop app (recommended)**: build the Tauri wrapper. Run `cd src-tauri; cargo run` for a debug build, or `cd src-tauri; tauri build` for a release installer.
 3. Drag a 3D file onto the window, or click **Open File...**.
 4. Drag an `.hdr` or `.exr` onto the window to use it as the environment, or click **Load HDR/EXR...**.
 5. Click **Generate (OpenSCAD)** to open the parametric text-to-3D panel.
@@ -50,12 +65,15 @@ A lightweight local-first 3D viewer to fill the gap left by Adobe Substance 3D V
 
 Future for this phase: hosted-API generation (Meshy / Tripo / Hyper3D) for organic shapes, optional local ONNX model support for fully-offline generative.
 
-### Phase 5 — Desktop wrap
-Wrap in **Tauri** (small binary, Rust core) for:
-- File associations (double-click a `.glb` to open in this app)
-- Recent files menu
-- Native title bar / drag region
-- Settings persistence
+### Phase 5 — Desktop wrap (DONE: basic wrap)
+- ✅ Tauri 2.x project at `src-tauri/`. `cargo run` to dev-build, `tauri build` to ship.
+- ✅ File associations declared in `tauri.conf.json` (`.glb`, `.gltf`, `.fbx`, `.obj`, `.stl`, `.ply`, `.usdz`, `.usd*`, `.step`, `.stp`, `.iges`, `.igs`, `.brep`, `.scad`, `.hdr`, `.exr`). Installer registers them on Windows.
+- ✅ Desktop window 1400x900, native title bar, drag-and-drop enabled.
+
+**Stretch for next iteration:**
+- Wire `argv[1]` (the path Windows passes on double-click) to the WebView so double-clicking a `.glb` actually opens it in the viewer. Requires `tauri-plugin-fs` for disk reads.
+- Recent files menu.
+- Persist last-used HDRI / tone-mapping / camera framing via Tauri settings.
 
 ## Vendoring (going fully offline)
 
