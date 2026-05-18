@@ -513,37 +513,40 @@ function tauriInvoke() {
   return null;
 }
 
-// ---------- .usdc converter (Phase 3.1) ----------
-// Sends .usdc bytes to the Rust side, which shells out to usdcat --flatten to
-// produce flattened .usda text. We then feed the USDA through USDZLoader.
-async function loadUsdcViaConverter(file) {
-  busy(`Converting ${file.name} via usdcat...`);
+// ---------- USD via usdcat → .glb pipeline (Phase 3.2) ----------
+// Three.js's USDA parser is too limited for real scenes. We side-step it
+// entirely: Rust shells out to `usdcat --flatten input.usd? -o out.glb`,
+// which uses the Pixar usdGltf plugin to produce a proper glTF binary. We
+// then feed that .glb through GLTFLoader, which handles every USD feature
+// the source file used.
+async function loadUsdViaGlbConverter(file, ext) {
+  busy(`Converting ${file.name} via usdcat → .glb...`);
   try {
     const invoke = tauriInvoke();
     if (!invoke) {
       throw new Error(
-        '.usdc support requires the desktop build (Tauri). In a plain browser there\'s no way ' +
-        'to run usdcat. Either build/run the desktop app, or convert your .usdc to .glb / .usdz ' +
-        'externally first.'
+        `.${ext} support requires the desktop build (Tauri) so we can run usdcat. ` +
+        `In a plain browser there's no way to invoke a native binary. Either build/run ` +
+        `the desktop app, or convert your file to .glb / .usdz externally first.`
       );
     }
     const inputBytes = Array.from(new Uint8Array(await file.arrayBuffer()));
-    const usdaBuf = await invoke('convert_usdc', { bytes: inputBytes });
-    // usdaBuf is an ArrayBuffer (Tauri Response). Wrap as USDZ and parse.
-    const baseName = file.name.replace(/\.usdc$/i, '.usda').replace(/.*[\\\/]/, '');
-    const zipData = zipSync({ [baseName]: [new Uint8Array(usdaBuf), { level: 0 }] });
-    let obj;
-    try {
-      obj = usdzLoader.parse(zipData.buffer);
-    } catch (parseErr) {
-      throw new Error(
-        `usdcat converted ${file.name} to USDA successfully, but Three.js's USDA parser ` +
-        `couldn't render it. The Three.js parser handles only a subset of the USD spec ` +
-        `(simple meshes, basic materials). For complex scenes, re-export from your DCC as ` +
-        `.glb or .usdz.\n\nUnderlying error: ${parseErr.message || parseErr}`
+    const glbBuf = await invoke('convert_usd_to_glb', { bytes: inputBytes, sourceExt: ext });
+
+    busy(`Loading converted ${file.name}...`);
+    // Pass the .glb bytes through GLTFLoader.parse — handles meshes, UVs,
+    // materials, textures embedded in the glb, skinning, etc.
+    await new Promise((resolve, reject) => {
+      gltfLoader.parse(
+        glbBuf,
+        '',
+        (gltf) => {
+          setObject(gltf.scene, file.name);
+          resolve();
+        },
+        (err) => reject(err)
       );
-    }
-    setObject(obj, file.name);
+    });
   } catch (err) {
     console.error(err);
     alert(`Couldn't load ${file.name}\n\n${err.message || err}`);
@@ -666,14 +669,17 @@ function loadFile(file) {
       break;
     case 'usd':
     case 'usda':
-      // Text USD: wrap into a USDZ container so Three's USDA-only loader can handle it.
-      // Works for simple, self-contained files.
-      loadRawUsd(file, ext);
-      break;
     case 'usdc':
-      // Binary USD: Three's USDZLoader cannot parse the Crate format. We shell out to
-      // Pixar's `usdcat` (via Tauri) to convert .usdc -> .usda first, then wrap as USDZ.
-      loadUsdcViaConverter(file);
+      // If running in Tauri, the robust path is usdcat → .glb → GLTFLoader.
+      // If running in a plain browser (no native binary access), fall back to
+      // the in-memory USDZ wrap for .usd/.usda (best-effort) or fail clearly for .usdc.
+      if (tauriInvoke()) {
+        loadUsdViaGlbConverter(file, ext);
+      } else if (ext === 'usdc') {
+        alert(`.usdc files need the desktop build to convert via usdcat.\nRun this in the Tauri app, or convert to .glb / .usdz externally.`);
+      } else {
+        loadRawUsd(file, ext);
+      }
       break;
     case 'step':
     case 'stp':

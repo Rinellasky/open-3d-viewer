@@ -24,8 +24,11 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
 }
 
 // ---------------------------------------------------------------------------
-// .usdc support: shell-out to Pixar's `usdcat` to convert binary USD to text USD
-// so Three.js's USDZLoader (which only parses USDA) can handle it.
+// .usdc support
+// Three.js's USDA parser is too limited for real-world USD scenes (chokes on
+// primvars, complex shaders, skinning, etc.). Adobe's usdcat ships with the
+// usdGltf plugin, which lets us convert .usdc -> .glb directly. We then feed
+// the .glb through Three's well-tested GLTFLoader.
 // ---------------------------------------------------------------------------
 
 /// Locate `usdcat.exe`. Probes in this order:
@@ -60,7 +63,7 @@ fn find_usdcat() -> Result<PathBuf, String> {
     }
   }
 
-  // 3. Adobe Substance 3D Viewer install (last resort)
+  // 3. Adobe Substance 3D Viewer install (last resort, but has usdGltf plugin)
   candidates.push(PathBuf::from(
     "C:\\Program Files\\Adobe\\Adobe Substance 3D Viewer (Beta)\\usdcat.exe",
   ));
@@ -84,11 +87,25 @@ fn locate_usdcat() -> Result<String, String> {
   find_usdcat().map(|p| p.display().to_string())
 }
 
-/// Convert raw .usdc bytes to flattened .usda bytes by shelling out to usdcat.
-/// Returns the converted USDA content as an ArrayBuffer in JS.
+/// Convert raw USD bytes (any USD variant — .usdc, .usda, .usd) to .glb by
+/// shelling out to `usdcat --flatten`. The `usdGltf` plugin (bundled with
+/// the Pixar USD distribution and with Adobe's install) does the heavy
+/// lifting. Returns the .glb content as an ArrayBuffer in JS, which the
+/// front-end then passes to Three.js's GLTFLoader.
+///
+/// `source_ext` lets the temp file get the right extension for usdcat to
+/// recognize the format. Pass "usdc", "usda", or "usd".
 #[tauri::command]
-fn convert_usdc(bytes: Vec<u8>) -> Result<tauri::ipc::Response, String> {
+fn convert_usd_to_glb(bytes: Vec<u8>, source_ext: String) -> Result<tauri::ipc::Response, String> {
   let usdcat = find_usdcat()?;
+
+  // Sanitize / restrict the extension
+  let ext = match source_ext.to_lowercase().as_str() {
+    "usdc" => "usdc",
+    "usda" => "usda",
+    "usd" => "usd",
+    other => return Err(format!("Unsupported source extension: {}", other)),
+  };
 
   let temp = std::env::temp_dir();
   let nonce = format!(
@@ -99,8 +116,8 @@ fn convert_usdc(bytes: Vec<u8>) -> Result<tauri::ipc::Response, String> {
       .map(|d| d.as_millis())
       .unwrap_or(0)
   );
-  let in_path = temp.join(format!("open3dv-{}.usdc", nonce));
-  let out_path = temp.join(format!("open3dv-{}.usda", nonce));
+  let in_path = temp.join(format!("open3dv-{}.{}", nonce, ext));
+  let out_path = temp.join(format!("open3dv-{}.glb", nonce));
 
   std::fs::write(&in_path, &bytes).map_err(|e| format!("Temp write failed: {}", e))?;
 
@@ -111,7 +128,7 @@ fn convert_usdc(bytes: Vec<u8>) -> Result<tauri::ipc::Response, String> {
     .arg(&out_path)
     .output();
 
-  // Best-effort cleanup of input
+  // Cleanup input regardless
   let _ = std::fs::remove_file(&in_path);
 
   let result = result.map_err(|e| format!("Failed to spawn usdcat: {}", e))?;
@@ -125,11 +142,19 @@ fn convert_usdc(bytes: Vec<u8>) -> Result<tauri::ipc::Response, String> {
     ));
   }
 
-  let usda_bytes = std::fs::read(&out_path)
-    .map_err(|e| format!("Couldn't read converted USDA: {}", e))?;
+  let glb_bytes =
+    std::fs::read(&out_path).map_err(|e| format!("Couldn't read converted .glb: {}", e))?;
   let _ = std::fs::remove_file(&out_path);
 
-  Ok(tauri::ipc::Response::new(usda_bytes))
+  if glb_bytes.len() < 12 || &glb_bytes[0..4] != b"glTF" {
+    return Err(format!(
+      "usdcat produced an unexpected output ({} bytes, not a glTF binary). \
+       The source may have features the glTF plugin doesn't support.",
+      glb_bytes.len()
+    ));
+  }
+
+  Ok(tauri::ipc::Response::new(glb_bytes))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -142,7 +167,7 @@ pub fn run(initial_file: Option<String>) {
       get_initial_file,
       read_file_bytes,
       locate_usdcat,
-      convert_usdc
+      convert_usd_to_glb
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
