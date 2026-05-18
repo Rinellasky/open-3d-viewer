@@ -502,6 +502,56 @@ async function loadCadFile(file, ext) {
   }
 }
 
+// ---------- Tauri invoke helper ----------
+function tauriInvoke() {
+  if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+    return window.__TAURI__.core.invoke.bind(window.__TAURI__.core);
+  }
+  if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+    return window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
+  }
+  return null;
+}
+
+// ---------- .usdc converter (Phase 3.1) ----------
+// Sends .usdc bytes to the Rust side, which shells out to usdcat --flatten to
+// produce flattened .usda text. We then feed the USDA through USDZLoader.
+async function loadUsdcViaConverter(file) {
+  busy(`Converting ${file.name} via usdcat...`);
+  try {
+    const invoke = tauriInvoke();
+    if (!invoke) {
+      throw new Error(
+        '.usdc support requires the desktop build (Tauri). In a plain browser there\'s no way ' +
+        'to run usdcat. Either build/run the desktop app, or convert your .usdc to .glb / .usdz ' +
+        'externally first.'
+      );
+    }
+    const inputBytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    const usdaBuf = await invoke('convert_usdc', { bytes: inputBytes });
+    // usdaBuf is an ArrayBuffer (Tauri Response). Wrap as USDZ and parse.
+    const baseName = file.name.replace(/\.usdc$/i, '.usda').replace(/.*[\\\/]/, '');
+    const zipData = zipSync({ [baseName]: [new Uint8Array(usdaBuf), { level: 0 }] });
+    let obj;
+    try {
+      obj = usdzLoader.parse(zipData.buffer);
+    } catch (parseErr) {
+      throw new Error(
+        `usdcat converted ${file.name} to USDA successfully, but Three.js's USDA parser ` +
+        `couldn't render it. The Three.js parser handles only a subset of the USD spec ` +
+        `(simple meshes, basic materials). For complex scenes, re-export from your DCC as ` +
+        `.glb or .usdz.\n\nUnderlying error: ${parseErr.message || parseErr}`
+      );
+    }
+    setObject(obj, file.name);
+  } catch (err) {
+    console.error(err);
+    alert(`Couldn't load ${file.name}\n\n${err.message || err}`);
+  } finally {
+    unbusy();
+  }
+}
+
 // ---------- USD wrapper (Phase 3) ----------
 // Wraps a raw .usd / .usda / .usdc into a USDZ container in memory so we can
 // reuse Three.js's USDZLoader. Works for self-contained USD files; files with
@@ -616,11 +666,14 @@ function loadFile(file) {
       break;
     case 'usd':
     case 'usda':
-    case 'usdc':
-      // Phase 3: wrap raw USD into a USDZ container so the existing loader can handle it.
-      // This works for simple/self-contained USD files. Files with external asset references
-      // need full Pixar USD support (planned: usd-wasm integration).
+      // Text USD: wrap into a USDZ container so Three's USDA-only loader can handle it.
+      // Works for simple, self-contained files.
       loadRawUsd(file, ext);
+      break;
+    case 'usdc':
+      // Binary USD: Three's USDZLoader cannot parse the Crate format. We shell out to
+      // Pixar's `usdcat` (via Tauri) to convert .usdc -> .usda first, then wrap as USDZ.
+      loadUsdcViaConverter(file);
       break;
     case 'step':
     case 'stp':
@@ -1282,10 +1335,7 @@ document.getElementById('scad-save').addEventListener('click', () => {
 // Phase 5.1: Open initial file from Tauri argv (file association launches)
 // =====================================================================
 async function openTauriInitialFile() {
-  // Detect Tauri runtime. With `withGlobalTauri: true`, window.__TAURI__ exists.
-  // Fall back to the internal API in case the global helper isn't enabled.
-  const invoke = (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke)
-              || (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke);
+  const invoke = tauriInvoke();
   if (!invoke) return; // running in plain browser; nothing to do
 
   let path = null;
