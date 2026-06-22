@@ -578,9 +578,25 @@ const PERSISTED_CONTROLS = [
 
 let appState = { v: STATE_VERSION, settings: {}, recents: [] };
 
+// Brief poll for window.__TAURI__ becoming available. Tauri 2 injects the
+// global asynchronously around the time the module script starts; if our
+// init runs first, tauriInvoke() returns null and persistence silently no-ops.
+async function waitForTauri(maxWaitMs = 1500) {
+  if (tauriInvoke()) return true;
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise(r => setTimeout(r, 20));
+    if (tauriInvoke()) return true;
+  }
+  return false; // plain browser, or Tauri injection failed
+}
+
 async function loadAppState() {
   const invoke = tauriInvoke();
-  if (!invoke) return; // plain browser: no persistence
+  if (!invoke) {
+    console.log('[state] no Tauri runtime — running as plain browser, persistence disabled');
+    return;
+  }
   try {
     const json = await invoke('load_app_state');
     const parsed = JSON.parse(json || '{}');
@@ -588,8 +604,9 @@ async function loadAppState() {
       appState.settings = (parsed.settings && typeof parsed.settings === 'object') ? parsed.settings : {};
       appState.recents  = Array.isArray(parsed.recents) ? parsed.recents : [];
     }
+    console.log(`[state] loaded ${appState.recents.length} recent file(s), ${Object.keys(appState.settings).length} setting(s)`);
   } catch (e) {
-    console.warn('Could not load saved state:', e);
+    console.warn('[state] load_app_state failed:', e);
   }
 }
 
@@ -816,6 +833,11 @@ function setObject(obj, fileName) {
   frameObject();
   updateInfo(fileName, obj);
   document.getElementById('empty-hint').classList.add('hidden');
+  // Always clear the busy indicator on successful render. Several entry
+  // points call busy() but rely on the loader's own callback to call
+  // unbusy() — for the cases where the success path doesn't (e.g. async
+  // gltfLoader.load callback from openByPath / drag-drop), this catches it.
+  unbusy();
 }
 
 function loadFile(file) {
@@ -1594,6 +1616,9 @@ async function openTauriInitialFile() {
 // Init sequence
 // =====================================================================
 (async () => {
+  // 0. Wait briefly for Tauri's global injection (no-op in plain browser)
+  await waitForTauri();
+
   // 1. Read persisted state (no-op in plain browser)
   await loadAppState();
 
