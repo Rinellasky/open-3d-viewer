@@ -120,6 +120,47 @@
   .file-input { display: none; }
   .stats { color: var(--muted); font-size: 11px; }
 
+  /* Recent files list */
+  #recents {
+    display: flex; flex-direction: column;
+    gap: 2px;
+    margin: 4px 0;
+  }
+  .recent-item {
+    width: 100%; margin: 0;
+    text-align: left;
+    background: transparent; border: 1px solid transparent;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .recent-item:hover { background: var(--panel-2); border-color: var(--border); }
+  .recent-item .r-name {
+    color: var(--text);
+    font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .recent-item .r-path {
+    color: var(--muted);
+    font-size: 10px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .recents-empty {
+    color: var(--muted);
+    font-size: 11px;
+    padding: 4px 8px;
+    font-style: italic;
+  }
+  .recents-actions {
+    display: flex; gap: 6px; margin-top: 2px;
+  }
+  .recents-actions button {
+    flex: 1; margin: 0;
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+
   /* Generate modal */
   #gen-modal {
     position: fixed; inset: 0;
@@ -273,6 +314,12 @@
   <button id="btn-generate">&#10024; Generate (OpenSCAD)</button>
   <input type="file" class="file-input" id="file-input"
          accept=".glb,.gltf,.fbx,.obj,.stl,.ply,.usdz,.usd,.usda,.usdc,.step,.stp,.iges,.igs,.brep,.hdr,.exr" multiple>
+
+  <h3 id="recents-header" style="display:none">Recent</h3>
+  <div id="recents" style="display:none"></div>
+  <div class="recents-actions" id="recents-actions" style="display:none">
+    <button id="btn-clear-recents" title="Clear recent files list">Clear Recent</button>
+  </div>
 
   <h3>Environment</h3>
   <div class="row">
@@ -511,6 +558,166 @@ function tauriInvoke() {
     return window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__);
   }
   return null;
+}
+
+// =====================================================================
+// Phase 6: persistent app state — UI settings + recent files
+// =====================================================================
+const STATE_VERSION = 1;
+const MAX_RECENTS   = 10;
+const PERSISTED_CONTROLS = [
+  // [elementId, type-hint]
+  ['env-preset',    'select'],
+  ['show-bg',       'checkbox'],
+  ['env-intensity', 'range'],
+  ['env-rotation',  'range'],
+  ['show-grid',     'checkbox'],
+  ['tone-mapping',  'select'],
+  ['exposure',      'range'],
+];
+
+let appState = { v: STATE_VERSION, settings: {}, recents: [] };
+
+async function loadAppState() {
+  const invoke = tauriInvoke();
+  if (!invoke) return; // plain browser: no persistence
+  try {
+    const json = await invoke('load_app_state');
+    const parsed = JSON.parse(json || '{}');
+    if (parsed && typeof parsed === 'object') {
+      appState.settings = (parsed.settings && typeof parsed.settings === 'object') ? parsed.settings : {};
+      appState.recents  = Array.isArray(parsed.recents) ? parsed.recents : [];
+    }
+  } catch (e) {
+    console.warn('Could not load saved state:', e);
+  }
+}
+
+let saveTimer = null;
+function scheduleSave() {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await invoke('save_app_state', { json: JSON.stringify(appState) });
+    } catch (e) {
+      console.warn('Could not save state:', e);
+    }
+  }, 400);
+}
+
+function captureSetting(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  appState.settings[id] = (el.type === 'checkbox') ? el.checked : el.value;
+  scheduleSave();
+}
+
+function applyPersistedSettings() {
+  for (const [id, type] of PERSISTED_CONTROLS) {
+    if (!(id in appState.settings)) continue;
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const v = appState.settings[id];
+    if (type === 'checkbox') el.checked = !!v;
+    else el.value = v;
+    // Fire input + change so the existing handlers actually apply the value to the renderer
+    el.dispatchEvent(new Event('input',  { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
+// ---- Recent files ----
+function addRecent(path, name) {
+  if (!path) return;
+  const entry = { path, name: name || path.split(/[\\/]/).pop(), openedAt: Date.now() };
+  appState.recents = [entry]
+    .concat(appState.recents.filter(r => r.path !== path))
+    .slice(0, MAX_RECENTS);
+  renderRecents();
+  scheduleSave();
+}
+
+function clearRecents() {
+  appState.recents = [];
+  renderRecents();
+  scheduleSave();
+}
+
+function shortenPath(p, max = 36) {
+  if (!p || p.length <= max) return p || '';
+  const head = p.slice(0, 3);
+  const tail = p.slice(-(max - head.length - 1));
+  return head + '…' + tail;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderRecents() {
+  const header = document.getElementById('recents-header');
+  const list   = document.getElementById('recents');
+  const acts   = document.getElementById('recents-actions');
+  if (!header || !list || !acts) return;
+  if (appState.recents.length === 0) {
+    header.style.display = 'none';
+    list.style.display   = 'none';
+    acts.style.display   = 'none';
+    return;
+  }
+  header.style.display = '';
+  list.style.display   = '';
+  acts.style.display   = '';
+  list.innerHTML = '';
+  for (const r of appState.recents) {
+    const el = document.createElement('button');
+    el.className = 'recent-item';
+    el.title = r.path;
+    el.innerHTML =
+      '<div class="r-name">' + escapeHtml(r.name) + '</div>' +
+      '<div class="r-path">' + escapeHtml(shortenPath(r.path)) + '</div>';
+    el.addEventListener('click', () => openByPath(r.path, r.name));
+    list.appendChild(el);
+  }
+}
+
+async function openByPath(path, name) {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    alert('Reopening files requires the desktop build.');
+    return;
+  }
+  const filename = name || path.split(/[\\/]/).pop();
+  busy(`Opening ${filename}...`);
+  try {
+    const bytes = await invoke('read_file_bytes', { path });
+    const file  = new File([new Blob([bytes])], filename);
+    loadFile(file);
+    addRecent(path, filename);
+  } catch (e) {
+    console.error(e);
+    alert(`Couldn't open ${filename}\n\n${e.message || e}`);
+    unbusy();
+  }
+}
+
+// ---- Tauri OS-level drag-drop listener ----
+// Browser drop events give File objects but no path; the Rust side captures
+// the OS-level drop and emits `os-drop` with the path strings so we can use
+// the read_file_bytes pipeline + record paths in the Recent list.
+function setupOsDropListener() {
+  const evtApi = window.__TAURI__ && window.__TAURI__.event;
+  if (!evtApi || !evtApi.listen) return;
+  evtApi.listen('os-drop', async (event) => {
+    const paths = Array.isArray(event.payload) ? event.payload : [];
+    for (const p of paths) {
+      await openByPath(p);
+    }
+  }).catch(err => console.warn('os-drop subscribe failed:', err));
 }
 
 // ---------- USD via usdcat → .glb pipeline (Phase 3.2) ----------
@@ -874,6 +1081,17 @@ document.getElementById('btn-reset-cam').addEventListener('click', () => {
   controls.update();
 });
 
+// Phase 6: wire each persisted control to also capture-to-state on change.
+// These listeners are ADDITIVE; they run alongside the existing handlers above.
+for (const [id] of PERSISTED_CONTROLS) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  const evt = (el.tagName === 'SELECT' || el.type === 'checkbox') ? 'change' : 'input';
+  el.addEventListener(evt, () => captureSetting(id));
+}
+
+document.getElementById('btn-clear-recents').addEventListener('click', clearRecents);
+
 document.getElementById('btn-screenshot').addEventListener('click', () => {
   renderer.render(scene, camera); // ensure fresh frame
   const data = renderer.domElement.toDataURL('image/png');
@@ -901,6 +1119,9 @@ window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragCount = 0;
   overlay.classList.remove('active');
+  // In Tauri the OS-drop listener handles drops with path info — skip the
+  // browser path (which would lose the disk path and miss Recent-files tracking).
+  if (tauriInvoke()) return;
   if (!e.dataTransfer.files.length) return;
   for (const f of e.dataTransfer.files) loadFile(f);
 });
@@ -1361,6 +1582,7 @@ async function openTauriInitialFile() {
     const blob  = new Blob([bytes]);
     const file  = new File([blob], filename);
     loadFile(file);
+    addRecent(path, filename);
   } catch (e) {
     console.error('Failed to open file passed on command line:', e);
     alert(`Couldn't open ${filename}\n\n${e.message || e}`);
@@ -1368,10 +1590,33 @@ async function openTauriInitialFile() {
   }
 }
 
-// Init: studio env
-setProceduralEnvironment('studio');
-animate();
-openTauriInitialFile();
+// =====================================================================
+// Init sequence
+// =====================================================================
+(async () => {
+  // 1. Read persisted state (no-op in plain browser)
+  await loadAppState();
+
+  // 2. Render the recent files list (header stays hidden if list is empty)
+  renderRecents();
+
+  // 3. Apply saved settings to the UI. Each control's change/input event
+  //    fires, which makes the existing handlers actually push the value
+  //    into the renderer.
+  applyPersistedSettings();
+
+  // 4. If env preset wasn't persisted, fall back to studio default.
+  if (!appState.settings || !appState.settings['env-preset']) {
+    setProceduralEnvironment('studio');
+  }
+
+  // 5. Start render loop
+  animate();
+
+  // 6. Wire path-aware drag-drop + file-open-via-argv in Tauri
+  setupOsDropListener();
+  openTauriInitialFile();
+})();
 </script>
 </body>
 </html>

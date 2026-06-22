@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use tauri::{Emitter, Manager};
+
 /// Holds state we want accessible from Tauri commands.
 struct AppState {
   // Mutex<Option<...>> so the JS side can `take` it once and then it's None.
@@ -21,6 +23,41 @@ fn get_initial_file(state: tauri::State<AppState>) -> Option<String> {
 fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
   let bytes = std::fs::read(&path).map_err(|e| format!("{}: {}", path, e))?;
   Ok(tauri::ipc::Response::new(bytes))
+}
+
+// ---------------------------------------------------------------------------
+// Persistent app state (settings + recent files)
+// Stored as a single JSON blob in the user's app-data directory:
+//   %APPDATA%\com.rinellasky.open3dviewer\state.json   (Windows)
+// JS controls the schema; Rust just round-trips the blob.
+// ---------------------------------------------------------------------------
+
+const STATE_FILE: &str = "state.json";
+
+fn state_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  let dir = app
+    .path()
+    .app_data_dir()
+    .map_err(|e| format!("Couldn't resolve app data dir: {}", e))?;
+  Ok(dir.join(STATE_FILE))
+}
+
+#[tauri::command]
+fn save_app_state(app: tauri::AppHandle, json: String) -> Result<(), String> {
+  let path = state_file_path(&app)?;
+  if let Some(parent) = path.parent() {
+    std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {}", e))?;
+  }
+  std::fs::write(&path, json).map_err(|e| format!("write failed: {}", e))
+}
+
+#[tauri::command]
+fn load_app_state(app: tauri::AppHandle) -> Result<String, String> {
+  let path = state_file_path(&app)?;
+  if !path.exists() {
+    return Ok("{}".to_string());
+  }
+  std::fs::read_to_string(&path).map_err(|e| format!("read failed: {}", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +204,9 @@ pub fn run(initial_file: Option<String>) {
       get_initial_file,
       read_file_bytes,
       locate_usdcat,
-      convert_usd_to_glb
+      convert_usd_to_glb,
+      save_app_state,
+      load_app_state
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -177,6 +216,22 @@ pub fn run(initial_file: Option<String>) {
             .build(),
         )?;
       }
+
+      // Forward OS-level drag-drop to the WebView with the actual file paths
+      // (browser drag-drop only gives File objects, no paths — paths are what
+      // we need for the Recent Files list and the path-based read pipeline).
+      if let Some(main) = app.get_webview_window("main") {
+        let emit_target = main.clone();
+        main.on_window_event(move |event| {
+          if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event
+          {
+            let path_strings: Vec<String> =
+              paths.iter().map(|p| p.display().to_string()).collect();
+            let _ = emit_target.emit("os-drop", path_strings);
+          }
+        });
+      }
+
       Ok(())
     })
     .run(tauri::generate_context!())
