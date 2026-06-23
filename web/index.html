@@ -737,7 +737,81 @@ function setupOsDropListener() {
   }).catch(err => console.warn('os-drop subscribe failed:', err));
 }
 
-// ---------- USD via usdcat → .glb pipeline (Phase 3.2) ----------
+// ---------- USD via TinyUSDZ (Phase 8: in-app, no usdcat needed) ----------
+let tinyusdzPromise = null;
+async function getTinyUsdz() {
+  if (tinyusdzPromise) return tinyusdzPromise;
+  tinyusdzPromise = (async () => {
+    const [loaderMod, utilsMod] = await Promise.all([
+      import('./vendor/tinyusdz/TinyUSDZLoader.js'),
+      import('./vendor/tinyusdz/TinyUSDZLoaderUtils.js')
+    ]);
+    const loader = new loaderMod.TinyUSDZLoader();
+    // useZstdCompressedWasm:false -> load the 2MB uncompressed .wasm directly.
+    // The compressed variant would save ~1.5MB but requires the 'fzstd' module
+    // at runtime, which we don't ship.
+    await loader.init({ useZstdCompressedWasm: false });
+    return { loader, utils: utilsMod.TinyUSDZLoaderUtils };
+  })();
+  return tinyusdzPromise;
+}
+
+async function loadUsdViaTinyUsdz(file, ext) {
+  try {
+    const { loader, utils } = await getTinyUsdz();
+    const url = URL.createObjectURL(file);
+    try {
+      const usdScene = await loader.loadAsync(url);
+      const rootNode = usdScene.getDefaultRootNode();
+      const defaultMtl = utils.createDefaultMaterial();
+      const threeNode = utils.buildThreeNode(rootNode, defaultMtl, usdScene, { overrideMaterial: false });
+      if (!threeNode) throw new Error('TinyUSDZ returned a null Three node');
+      setObject(threeNode, file.name);
+      appState._lastLoader = 'tinyusdz';
+      scheduleSave();
+      return true;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch (err) {
+    console.warn('TinyUSDZ failed for', file.name, '— falling back:', err);
+    return false;
+  }
+}
+
+// Top-level USD dispatch: try in-app TinyUSDZ first, fall back to usdcat
+// (Tauri only) or the wrap-as-USDZ trick (.usd/.usda only) if needed.
+async function loadUsdAny(file, ext) {
+  busy(`Parsing ${file.name} via TinyUSDZ...`);
+  const ok = await loadUsdViaTinyUsdz(file, ext);
+  if (ok) return;
+
+  // TinyUSDZ couldn't handle it. Try the usdcat shell-out (Tauri only).
+  if (tauriInvoke()) {
+    console.log('Falling back to usdcat shell-out for', file.name);
+    await loadUsdViaGlbConverter(file, ext);
+    appState._lastLoader = 'usdcat';
+    scheduleSave();
+    return;
+  }
+
+  // Plain browser: try the USDZ-wrap trick for text variants.
+  if (ext === 'usd' || ext === 'usda') {
+    await loadRawUsd(file, ext);
+    return;
+  }
+
+  unbusy();
+  alert(
+    `Couldn't parse ${file.name}.\n\n` +
+    `TinyUSDZ couldn't load it, and you're running in a plain browser so the ` +
+    `usdcat fallback isn't available. Workarounds:\n` +
+    `  • Run the desktop build for usdcat fallback\n` +
+    `  • Re-export as .glb or .usdz from your DCC`
+  );
+}
+
+// ---------- USD via usdcat → .glb pipeline (Phase 3.2, now a fallback) ----------
 // Three.js's USDA parser is too limited for real scenes. We side-step it
 // entirely: Rust shells out to `usdcat --flatten input.usd? -o out.glb`,
 // which uses the Pixar usdGltf plugin to produce a proper glTF binary. We
@@ -899,16 +973,8 @@ function loadFile(file) {
     case 'usd':
     case 'usda':
     case 'usdc':
-      // If running in Tauri, the robust path is usdcat → .glb → GLTFLoader.
-      // If running in a plain browser (no native binary access), fall back to
-      // the in-memory USDZ wrap for .usd/.usda (best-effort) or fail clearly for .usdc.
-      if (tauriInvoke()) {
-        loadUsdViaGlbConverter(file, ext);
-      } else if (ext === 'usdc') {
-        alert(`.usdc files need the desktop build to convert via usdcat.\nRun this in the Tauri app, or convert to .glb / .usdz externally.`);
-      } else {
-        loadRawUsd(file, ext);
-      }
+      // Phase 8: TinyUSDZ in-app -> usdcat (Tauri) -> USDZ-wrap (.usd/.usda)
+      loadUsdAny(file, ext);
       break;
     case 'step':
     case 'stp':

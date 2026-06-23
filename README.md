@@ -47,7 +47,7 @@ open-3d-viewer/
 |------|------------|-------|
 | Real-time meshes | `.glb` `.gltf` (with DRACO) `.fbx` `.obj` `.stl` `.ply` | Three.js native loaders |
 | USDZ | `.usdz` | Three.js native loader |
-| USD (binary) | `.usdc` `.usda` `.usd` | Desktop only. Routed through `usdcat → .glb → GLTFLoader` for robust handling of primvars, materials, UVs, skinning. Plain-browser falls back to wrapping `.usd`/`.usda` as USDZ (best-effort). |
+| USD (binary + text) | `.usdc` `.usda` `.usd` | Loaded in-app via TinyUSDZ wasm (~2 MB, no external binary). Falls back to `usdcat` -> `.glb` -> GLTFLoader if TinyUSDZ cannot parse a particular file. |
 | CAD (open standards) | `.step` `.stp` `.iges` `.igs` `.brep` | OpenCascade compiled to WASM via [`occt-import-js`](https://github.com/kovacsv/occt-import-js) (lazy-loaded). |
 | Environments | `.hdr` `.exr` | RGBE / OpenEXR equirect |
 | Generation | OpenSCAD source | Rendered with [openscad-wasm](https://github.com/openscad/openscad-wasm) to STL → loaded into viewer |
@@ -73,7 +73,7 @@ open-3d-viewer/
 - **Phase 5** — Tauri desktop wrap, file associations, argv-to-WebView open ✅
 - **Phase 6** — Recent Files + settings persistence ✅
 - **Phase 7** — Vendor Three.js locally (offline-first) ✅
-- **Phase 8** — usd-wasm to drop the `usdcat` shell-out — *open*
+- **Phase 8** -- TinyUSDZ in-app wasm USD loader (drops the usdcat shell-out as primary; usdcat remains as a fallback) (DONE)
 
 ## How USD support actually works
 
