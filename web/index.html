@@ -391,8 +391,8 @@
 <script type="importmap">
 {
   "imports": {
-    "three":         "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    "three":         "./vendor/three/build/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
   }
 }
 </script>
@@ -455,7 +455,7 @@ let backgroundEnabled = true;
 
 // ---------- Loaders ----------
 const dracoLoader = new DRACOLoader();
-dracoLoader.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
+dracoLoader.setDecoderPath('./vendor/three/examples/jsm/libs/draco/');
 
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(dracoLoader);

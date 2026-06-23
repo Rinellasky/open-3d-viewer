@@ -38,13 +38,11 @@ if (Test-Path $threeMarker) {
   Copy-Item "$stage\package\examples\jsm" "$threeDir\examples\jsm"     -Recurse -Container
   Write-Host " done"
 
-  # Trim weight: examples/jsm has ~30MB of stuff we don't load. We only need
-  # the subdirs that index.html actually imports from.
-  $keep = @('controls','loaders','environments','libs')
-  $jsmDir = "$threeDir\examples\jsm"
-  Get-ChildItem $jsmDir -Force | Where-Object {
-    $_.PSIsContainer -and ($_.Name -notin $keep)
-  } | ForEach-Object { Remove-Item $_.FullName -Recurse -Force }
+  # NOTE: we do NOT trim examples/jsm subdirs. An earlier pass tried keeping
+  # only {controls, loaders, environments, libs} and it broke transitive
+  # imports — GLTFLoader imports ../utils/BufferGeometryUtils.js, FBXLoader
+  # imports the same, etc. The ~60 MB on-disk cost of keeping everything is
+  # well worth the simplicity and correctness.
 
   # Cleanup
   Remove-Item $tarFile, $stage -Recurse -Force
