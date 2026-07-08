@@ -27,9 +27,6 @@ fn read_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
 
 // ---------------------------------------------------------------------------
 // Persistent app state (settings + recent files)
-// Stored as a single JSON blob in the user's app-data directory:
-//   %APPDATA%\com.rinellasky.open3dviewer\state.json   (Windows)
-// JS controls the schema; Rust just round-trips the blob.
 // ---------------------------------------------------------------------------
 
 const STATE_FILE: &str = "state.json";
@@ -61,26 +58,45 @@ fn load_app_state(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// .usdc support
-// Three.js's USDA parser is too limited for real-world USD scenes (chokes on
-// primvars, complex shaders, skinning, etc.). Adobe's usdcat ships with the
-// usdGltf plugin, which lets us convert .usdc -> .glb directly. We then feed
-// the .glb through Three's well-tested GLTFLoader.
+// Screenshot save (v0.1.1)
+// Writes PNG bytes into the same directory as the currently-loaded model, so
+// the screenshot ends up alongside the source file rather than in the browser
+// download folder.
 // ---------------------------------------------------------------------------
 
-/// Locate `usdcat.exe`. Probes in this order:
-///   1. `usdcat` on PATH (works if user did `pip install usd-core` and Scripts is on PATH)
-///   2. Known Python install locations (miniconda, anaconda, system Python)
-///   3. Adobe Substance 3D Viewer's bundled `usdcat.exe`
+#[tauri::command]
+fn save_screenshot_next_to(
+  model_path: String,
+  filename: String,
+  bytes: Vec<u8>,
+) -> Result<String, String> {
+  let model = PathBuf::from(&model_path);
+  let dir = model
+    .parent()
+    .ok_or_else(|| format!("Cannot determine parent directory of {}", model_path))?;
+
+  // Reject filenames that try to escape the directory
+  if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+    return Err(format!("Invalid filename: {}", filename));
+  }
+
+  let target = dir.join(&filename);
+  std::fs::write(&target, &bytes)
+    .map_err(|e| format!("Couldn't write {}: {}", target.display(), e))?;
+  Ok(target.display().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// .usdc support (usdcat fallback path, kept from Phase 3.2)
+// ---------------------------------------------------------------------------
+
 fn find_usdcat() -> Result<PathBuf, String> {
-  // 1. PATH
   if let Ok(output) = std::process::Command::new("usdcat").arg("--help").output() {
     if output.status.success() {
       return Ok(PathBuf::from("usdcat"));
     }
   }
 
-  // 2. Known Python install locations on Windows
   let mut candidates: Vec<PathBuf> = Vec::new();
   if let Ok(userprofile) = std::env::var("USERPROFILE") {
     candidates.push(PathBuf::from(&userprofile).join("miniconda3\\Scripts\\usdcat.exe"));
@@ -100,7 +116,6 @@ fn find_usdcat() -> Result<PathBuf, String> {
     }
   }
 
-  // 3. Adobe Substance 3D Viewer install (last resort, but has usdGltf plugin)
   candidates.push(PathBuf::from(
     "C:\\Program Files\\Adobe\\Adobe Substance 3D Viewer (Beta)\\usdcat.exe",
   ));
@@ -118,25 +133,15 @@ fn find_usdcat() -> Result<PathBuf, String> {
   )
 }
 
-/// Returns the resolved usdcat path (for diagnostics / UI).
 #[tauri::command]
 fn locate_usdcat() -> Result<String, String> {
   find_usdcat().map(|p| p.display().to_string())
 }
 
-/// Convert raw USD bytes (any USD variant — .usdc, .usda, .usd) to .glb by
-/// shelling out to `usdcat --flatten`. The `usdGltf` plugin (bundled with
-/// the Pixar USD distribution and with Adobe's install) does the heavy
-/// lifting. Returns the .glb content as an ArrayBuffer in JS, which the
-/// front-end then passes to Three.js's GLTFLoader.
-///
-/// `source_ext` lets the temp file get the right extension for usdcat to
-/// recognize the format. Pass "usdc", "usda", or "usd".
 #[tauri::command]
 fn convert_usd_to_glb(bytes: Vec<u8>, source_ext: String) -> Result<tauri::ipc::Response, String> {
   let usdcat = find_usdcat()?;
 
-  // Sanitize / restrict the extension
   let ext = match source_ext.to_lowercase().as_str() {
     "usdc" => "usdc",
     "usda" => "usda",
@@ -165,7 +170,6 @@ fn convert_usd_to_glb(bytes: Vec<u8>, source_ext: String) -> Result<tauri::ipc::
     .arg(&out_path)
     .output();
 
-  // Cleanup input regardless
   let _ = std::fs::remove_file(&in_path);
 
   let result = result.map_err(|e| format!("Failed to spawn usdcat: {}", e))?;
@@ -197,6 +201,25 @@ fn convert_usd_to_glb(bytes: Vec<u8>, source_ext: String) -> Result<tauri::ipc::
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run(initial_file: Option<String>) {
   tauri::Builder::default()
+    // single-instance MUST be registered before anything else — its whole job
+    // is to short-circuit second-instance startup, and it can only do that if
+    // it initializes first. When a second instance launches, this callback
+    // runs on the FIRST instance's process; the second one exits.
+    .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+      // Focus the existing main window so the user can see the new file load.
+      if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+      }
+      // Forward the file path (if any) to the WebView. argv[0] is the exe
+      // path; argv[1] is the file the OS handed the second instance.
+      if let Some(path) = argv.get(1) {
+        if !path.is_empty() && !path.starts_with("--") {
+          let _ = app.emit("second-instance-file", path.clone());
+        }
+      }
+    }))
     .manage(AppState {
       initial_file: Mutex::new(initial_file),
     })
@@ -206,7 +229,8 @@ pub fn run(initial_file: Option<String>) {
       locate_usdcat,
       convert_usd_to_glb,
       save_app_state,
-      load_app_state
+      load_app_state,
+      save_screenshot_next_to
     ])
     .setup(|app| {
       if cfg!(debug_assertions) {
@@ -217,9 +241,6 @@ pub fn run(initial_file: Option<String>) {
         )?;
       }
 
-      // Forward OS-level drag-drop to the WebView with the actual file paths
-      // (browser drag-drop only gives File objects, no paths — paths are what
-      // we need for the Recent Files list and the path-based read pipeline).
       if let Some(main) = app.get_webview_window("main") {
         let emit_target = main.clone();
         main.on_window_event(move |event| {

@@ -55,6 +55,12 @@ This project uses the following third-party assets and libraries.
   (preferring `pip install usd-core`, falling back to Adobe Substance 3D Viewer's
   bundled copy if present).
 
+
+
+### [tauri-plugin-single-instance](https://github.com/tauri-apps/plugins-workspace/tree/v2/plugins/single-instance) 2.4.2
+- License: MIT / Apache-2.0.
+- Used so that double-clicking a supported file in Explorer routes to the already-running viewer instead of spawning a new window.
+
 ## Notes on Adobe Substance 3D Viewer
 
 This project is a from-scratch alternative inspired by Adobe Substance 3D Viewer

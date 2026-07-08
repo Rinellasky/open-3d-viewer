@@ -449,6 +449,7 @@ scene.add(dir);
 
 // Current loaded object
 let currentObject = null;
+let currentModelPath = null; // full disk path if known — enables "save screenshot next to model"
 let currentEnvTexture = null;
 let envSource = null; // raw equirect texture for rotation/background
 let backgroundEnabled = true;
@@ -713,7 +714,7 @@ async function openByPath(path, name) {
   try {
     const bytes = await invoke('read_file_bytes', { path });
     const file  = new File([new Blob([bytes])], filename);
-    loadFile(file);
+    loadFile(file, { path });
     addRecent(path, filename);
   } catch (e) {
     console.error(e);
@@ -735,6 +736,17 @@ function setupOsDropListener() {
       await openByPath(p);
     }
   }).catch(err => console.warn('os-drop subscribe failed:', err));
+
+  // v0.1.1 single-instance: when the user double-clicks a file in Explorer
+  // and Windows launches a second app.exe process, tauri-plugin-single-instance
+  // short-circuits it. The Rust callback focuses the existing window and emits
+  // 'second-instance-file' with the argv[1] path — we open it here.
+  evtApi.listen('second-instance-file', async (event) => {
+    const path = event.payload;
+    if (typeof path === 'string' && path) {
+      await openByPath(path);
+    }
+  }).catch(err => console.warn('second-instance-file subscribe failed:', err));
 }
 
 // ---------- USD via TinyUSDZ (Phase 8: in-app, no usdcat needed) ----------
@@ -914,7 +926,10 @@ function setObject(obj, fileName) {
   unbusy();
 }
 
-function loadFile(file) {
+function loadFile(file, opts) {
+  // If the caller knows the file's disk path (argv, OS-drop, Recents click),
+  // track it so the screenshot handler can save PNGs next to the model.
+  currentModelPath = (opts && opts.path) || null;
   const url = URL.createObjectURL(file);
   const name = file.name.toLowerCase();
   const ext = name.slice(name.lastIndexOf('.') + 1);
@@ -1180,13 +1195,48 @@ for (const [id] of PERSISTED_CONTROLS) {
 
 document.getElementById('btn-clear-recents').addEventListener('click', clearRecents);
 
-document.getElementById('btn-screenshot').addEventListener('click', () => {
+document.getElementById('btn-screenshot').addEventListener('click', async () => {
   renderer.render(scene, camera); // ensure fresh frame
+
+  // Build filename: {modelName}_YYYY-MM-DD_HH-MM-SS.png
+  const nameEl = document.getElementById('info-name');
+  const rawName = (nameEl && nameEl.textContent) ? nameEl.textContent.trim() : 'render';
+  const modelName = (rawName.replace(/\.[^.]+$/, '') || 'render').replace(/[<>:"/\\|?*]/g, '_');
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+  const filename = `${modelName}_${stamp}.png`;
+
+  const invoke = tauriInvoke();
+  // Save next to the model file when we know its disk path and Tauri is available
+  if (currentModelPath && invoke) {
+    try {
+      const dataUrl = renderer.domElement.toDataURL('image/png');
+      const b64 = dataUrl.split(',')[1];
+      const bin = atob(b64);
+      const bytes = new Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const savedTo = await invoke('save_screenshot_next_to', {
+        modelPath: currentModelPath,
+        filename,
+        bytes
+      });
+      // Brief on-screen confirmation via the info line
+      const infoStats = document.getElementById('info-stats');
+      const prev = infoStats.textContent;
+      infoStats.textContent = `Saved screenshot: ${savedTo}`;
+      setTimeout(() => { if (infoStats.textContent.startsWith('Saved screenshot:')) infoStats.textContent = prev; }, 4000);
+      return;
+    } catch (e) {
+      console.warn('Save-next-to-model failed; falling back to browser download:', e);
+    }
+  }
+
+  // Fallback: browser download (plain-browser mode, or unknown model path)
   const data = renderer.domElement.toDataURL('image/png');
   const a = document.createElement('a');
   a.href = data;
-  const name = currentObject ? (document.getElementById('info-name').textContent || 'render') : 'render';
-  a.download = `${name.replace(/\.[^.]+$/, '')}-${Date.now()}.png`;
+  a.download = filename;
   a.click();
 });
 
@@ -1669,7 +1719,7 @@ async function openTauriInitialFile() {
     const bytes = await invoke('read_file_bytes', { path });
     const blob  = new Blob([bytes]);
     const file  = new File([blob], filename);
-    loadFile(file);
+    loadFile(file, { path });
     addRecent(path, filename);
   } catch (e) {
     console.error('Failed to open file passed on command line:', e);
